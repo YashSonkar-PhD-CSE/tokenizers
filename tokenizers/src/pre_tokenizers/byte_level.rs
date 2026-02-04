@@ -1,5 +1,7 @@
 use ahash::{AHashMap, AHashSet};
 use std::sync::LazyLock;
+use std::time::Instant;
+use std::cell::RefCell;
 
 use crate::utils::SysRegex;
 use serde::{Deserialize, Serialize};
@@ -47,6 +49,69 @@ static RE: LazyLock<SysRegex> = LazyLock::new(|| {
 static BYTES_CHAR: LazyLock<AHashMap<u8, char>> = LazyLock::new(bytes_char);
 static CHAR_BYTES: LazyLock<AHashMap<char, u8>> =
     LazyLock::new(|| bytes_char().into_iter().map(|(c, b)| (b, c)).collect());
+
+// Thread-local timing statistics for ByteLevel pre-tokenization
+thread_local! {
+    static BYTE_LEVEL_STATS: RefCell<ByteLevelStats> = RefCell::new(ByteLevelStats::default());
+}
+
+#[derive(Debug, Clone, Default)]
+struct ByteLevelStats {
+    total_prefix_space_time: u128,
+    total_regex_split_time: u128,
+    total_byte_transform_time: u128,
+    call_count: usize,
+}
+
+impl ByteLevelStats {
+    fn reset(&mut self) {
+        self.total_prefix_space_time = 0;
+        self.total_regex_split_time = 0;
+        self.total_byte_transform_time = 0;
+        self.call_count = 0;
+    }
+}
+
+/// Reset ByteLevel pre-tokenization timing statistics
+pub fn reset_byte_level_stats() {
+    BYTE_LEVEL_STATS.with(|stats| {
+        stats.borrow_mut().reset();
+    });
+}
+
+/// Print ByteLevel pre-tokenization timing statistics
+pub fn print_byte_level_stats() {
+    BYTE_LEVEL_STATS.with(|stats| {
+        let s = stats.borrow();
+        if s.call_count == 0 {
+            println!("No ByteLevel pre-tokenization calls recorded.");
+            return;
+        }
+        
+        let total = s.total_prefix_space_time + s.total_regex_split_time + s.total_byte_transform_time;
+        let avg_per_call = total as f64 / s.call_count as f64;
+        
+        println!("\n=== ByteLevel Pre-tokenization Statistics ===");
+        println!("Total calls: {}", s.call_count);
+        println!("Average per call: {:.2} ns", avg_per_call);
+        println!("\nPhase breakdown (average per call):");
+        println!("  1. Prefix space handling:  {:>10.2} ns ({:>5.1}%)", 
+                 s.total_prefix_space_time as f64 / s.call_count as f64,
+                 (s.total_prefix_space_time as f64 / total as f64) * 100.0);
+        println!("  2. Regex splitting:        {:>10.2} ns ({:>5.1}%)", 
+                 s.total_regex_split_time as f64 / s.call_count as f64,
+                 (s.total_regex_split_time as f64 / total as f64) * 100.0);
+        println!("  3. Byte-level transform:   {:>10.2} ns ({:>5.1}%)", 
+                 s.total_byte_transform_time as f64 / s.call_count as f64,
+                 (s.total_byte_transform_time as f64 / total as f64) * 100.0);
+        println!("\nTotal time breakdown:");
+        println!("  Prefix space handling:     {:>10} ns", s.total_prefix_space_time);
+        println!("  Regex splitting:           {:>10} ns", s.total_regex_split_time);
+        println!("  Byte-level transform:      {:>10} ns", s.total_byte_transform_time);
+        println!("  Total:                     {:>10} ns", total);
+        println!("============================================\n");
+    });
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 /// Provides all the necessary steps to handle the BPE tokenization at the byte-level. Takes care
@@ -119,16 +184,32 @@ impl ByteLevel {
 impl PreTokenizer for ByteLevel {
     fn pre_tokenize(&self, pretokenized: &mut PreTokenizedString) -> Result<()> {
         let re_ref: &SysRegex = &RE;
+        
+        // Phase 1: Splitting (prefix space + regex)
+        let mut prefix_time = 0u128;
+        let mut regex_time = 0u128;
+        
         pretokenized.split(|_, mut normalized| {
+            // Measure prefix space handling
+            let prefix_start = Instant::now();
             if self.add_prefix_space && !normalized.get().starts_with(' ') {
                 normalized.prepend(" ");
             }
-            if self.use_regex {
+            prefix_time += prefix_start.elapsed().as_nanos();
+            
+            // Measure regex splitting
+            let regex_start = Instant::now();
+            let result = if self.use_regex {
                 normalized.split(re_ref, SplitDelimiterBehavior::Isolated)
             } else {
                 Ok(vec![normalized])
-            }
+            };
+            regex_time += regex_start.elapsed().as_nanos();
+            result
         })?;
+        
+        // Phase 2: Byte-level transformation
+        let transform_start = Instant::now();
         pretokenized.normalize(|normalized| {
             let s = normalized.get();
             let mut transformations: Vec<(char, isize)> = Vec::with_capacity(s.len());
@@ -143,7 +224,19 @@ impl PreTokenizer for ByteLevel {
             }
             normalized.transform(transformations, 0);
             Ok(())
-        })
+        })?;
+        let transform_time = transform_start.elapsed().as_nanos();
+        
+        // Record statistics
+        BYTE_LEVEL_STATS.with(|stats| {
+            let mut s = stats.borrow_mut();
+            s.total_prefix_space_time += prefix_time;
+            s.total_regex_split_time += regex_time;
+            s.total_byte_transform_time += transform_time;
+            s.call_count += 1;
+        });
+        
+        Ok(())
     }
 }
 

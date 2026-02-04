@@ -1,8 +1,8 @@
 use std::time::Instant;
-use tokenizers::tokenizer::{Tokenizer, EncodeInput, Encoding};
+use tokenizers::tokenizer::Tokenizer;
+use tokenizers::pre_tokenizers::byte_level::{reset_byte_level_stats, print_byte_level_stats};
 use std::env;
 use std::fs;
-use std::path::Path;
 // cargo run --example profiler -- <tokenizer_path> <text_path>
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = env::args().collect();
@@ -24,6 +24,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut total_model = 0u128;
     let mut total_post_processing = 0u128;
     let mut total_end_to_end = 0u128;
+
+    // Reset ByteLevel statistics before profiling
+    reset_byte_level_stats();
 
     for &line in &lines {
         // End-to-end timing
@@ -66,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // 4. Post-processing
         let start_full_no_post = Instant::now();
         let encoding_no_post = tokenizer.encode(line, false)?;
-        let time_no_post = start_full_no_post.elapsed().as_nanos();
+        let _time_no_post = start_full_no_post.elapsed().as_nanos();
 
         if let Some(post) = tokenizer.get_post_processor() {
              let start_actual_post = Instant::now();
@@ -84,6 +87,9 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("Post-processing:    {:>10.2} ns", total_post_processing as f64 / n);
     println!("Total (Pipeline):   {:>10.2} ns", (total_normalization + total_pre_tokenization + total_model + total_post_processing) as f64 / n);
     println!("Total (End-to-End): {:>10.2} ns", total_end_to_end as f64 / n);
+
+    // Print fine-grained ByteLevel statistics
+    print_byte_level_stats();
 
     // Batch profiling
     println!("Profiling batch encode...");
