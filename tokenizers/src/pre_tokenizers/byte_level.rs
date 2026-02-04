@@ -14,7 +14,7 @@ use crate::utils::macro_rules_attribute;
 
 /// Converts bytes to unicode characters.
 /// See https://github.com/openai/gpt-2/blob/master/src/encoder.py#L9
-pub(crate) fn bytes_char() -> AHashMap<u8, char> {
+pub(crate) fn bytes_char() -> [char; 256] {
     let mut bs: Vec<u8> = vec![];
     bs.extend(b'!'..=b'~');
     bs.extend(b'\xA1'..=b'\xAC');
@@ -31,13 +31,14 @@ pub(crate) fn bytes_char() -> AHashMap<u8, char> {
         }
     }
 
+    let mut result = ['\0'; 256];
     // Safety: cs contains all values from bs (between 0 and 255),
     // and some values of value 2⁸ + n, where n is between 0 and 255. This is between 255 and 512.
     // Both ranges are valid UTF-32 values (which is fully saturated until 0xD000)
-    bs.into_iter()
-        .zip(cs)
-        .map(|(f, t)| (f, unsafe { std::char::from_u32_unchecked(t) }))
-        .collect()
+    for (f, t) in bs.into_iter().zip(cs) {
+        result[f as usize] = unsafe { std::char::from_u32_unchecked(t) };
+    }
+    result
 }
 
 /// Regex that matches exactly one token.
@@ -46,9 +47,15 @@ static RE: LazyLock<SysRegex> = LazyLock::new(|| {
     SysRegex::new(r"'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+")
         .unwrap()
 });
-static BYTES_CHAR: LazyLock<AHashMap<u8, char>> = LazyLock::new(bytes_char);
+static BYTES_CHAR: LazyLock<[char; 256]> = LazyLock::new(bytes_char);
 static CHAR_BYTES: LazyLock<AHashMap<char, u8>> =
-    LazyLock::new(|| bytes_char().into_iter().map(|(c, b)| (b, c)).collect());
+    LazyLock::new(|| {
+        bytes_char()
+            .iter()
+            .enumerate()
+            .map(|(b, &c)| (c, b as u8))
+            .collect()
+    });
 
 // Thread-local timing statistics for ByteLevel pre-tokenization
 thread_local! {
@@ -156,7 +163,7 @@ impl ByteLevel {
     }
 
     pub fn alphabet() -> AHashSet<char> {
-        BYTES_CHAR.values().copied().collect()
+        BYTES_CHAR.iter().copied().collect()
     }
 
     #[must_use]
@@ -219,7 +226,7 @@ impl PreTokenizer for ByteLevel {
                     s.as_bytes()[i..i + size]
                         .iter()
                         .enumerate()
-                        .map(|(i, b)| (BYTES_CHAR[b], isize::from(i > 0))),
+                        .map(|(i, b)| (BYTES_CHAR[*b as usize], isize::from(i > 0))),
                 );
             }
             normalized.transform(transformations, 0);
@@ -296,12 +303,12 @@ pub fn process_offsets(encoding: &mut Encoding, add_prefix_space: bool) {
     encoding.process_tokens_with_offsets_mut(|(i, (token, offsets))| {
         let mut leading_spaces = token
             .chars()
-            .take_while(|c| *c == BYTES_CHAR[&b' '] || c.is_whitespace())
+            .take_while(|c| *c == BYTES_CHAR[b' ' as usize] || c.is_whitespace())
             .count();
         let trailing_spaces = token
             .chars()
             .rev()
-            .take_while(|c| *c == BYTES_CHAR[&b' '] || c.is_whitespace())
+            .take_while(|c| *c == BYTES_CHAR[b' ' as usize] || c.is_whitespace())
             .count();
 
         if leading_spaces > 0 || trailing_spaces > 0 {
