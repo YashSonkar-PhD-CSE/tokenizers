@@ -111,11 +111,6 @@ pub fn print_byte_level_stats() {
         println!("  3. Byte-level transform:   {:>10.2} ns ({:>5.1}%)", 
                  s.total_byte_transform_time as f64 / s.call_count as f64,
                  (s.total_byte_transform_time as f64 / total as f64) * 100.0);
-        println!("\nTotal time breakdown:");
-        println!("  Prefix space handling:     {:>10} ns", s.total_prefix_space_time);
-        println!("  Regex splitting:           {:>10} ns", s.total_regex_split_time);
-        println!("  Byte-level transform:      {:>10} ns", s.total_byte_transform_time);
-        println!("  Total:                     {:>10} ns", total);
         println!("============================================\n");
     });
 }
