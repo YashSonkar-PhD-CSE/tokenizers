@@ -1,7 +1,7 @@
 use ahash::{AHashMap, AHashSet};
+use std::cell::RefCell;
 use std::sync::LazyLock;
 use std::time::Instant;
-use std::cell::RefCell;
 
 use crate::utils::SysRegex;
 use serde::{Deserialize, Serialize};
@@ -48,14 +48,79 @@ static RE: LazyLock<SysRegex> = LazyLock::new(|| {
         .unwrap()
 });
 static BYTES_CHAR: LazyLock<[char; 256]> = LazyLock::new(bytes_char);
-static CHAR_BYTES: LazyLock<AHashMap<char, u8>> =
-    LazyLock::new(|| {
-        bytes_char()
-            .iter()
-            .enumerate()
-            .map(|(b, &c)| (c, b as u8))
-            .collect()
-    });
+static CHAR_BYTES: LazyLock<AHashMap<char, u8>> = LazyLock::new(|| {
+    bytes_char()
+        .iter()
+        .enumerate()
+        .map(|(b, &c)| (c, b as u8))
+        .collect()
+});
+
+#[inline]
+fn byte_to_transformation(byte: u8) -> (char, isize) {
+    // Safety: `byte` is in `0..=255`, so indexing into the 256-entry lookup table is always valid.
+    let mapped = unsafe { *BYTES_CHAR.get_unchecked(byte as usize) };
+    // In UTF-8, continuation bytes are exactly `10xxxxxx`.
+    let shift = isize::from((byte & 0b1100_0000) == 0b1000_0000);
+    (mapped, shift)
+}
+
+#[inline]
+fn extend_transformations_scalar(bytes: &[u8], transformations: &mut Vec<(char, isize)>) {
+    transformations.extend(bytes.iter().copied().map(byte_to_transformation));
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn extend_transformations_avx2(bytes: &[u8], transformations: &mut Vec<(char, isize)>) {
+    #[cfg(target_arch = "x86")]
+    use std::arch::x86::*;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    let mut i = 0usize;
+    let len = bytes.len();
+
+    let mask_c0 = _mm256_set1_epi8(0b1100_0000_u8 as i8);
+    let mask_80 = _mm256_set1_epi8(0b1000_0000_u8 as i8);
+
+    while i + 32 <= len {
+        let ptr = bytes.as_ptr().add(i) as *const __m256i;
+        let lane = _mm256_loadu_si256(ptr);
+        let high_bits = _mm256_and_si256(lane, mask_c0);
+        let continuation = _mm256_cmpeq_epi8(high_bits, mask_80);
+        let continuation_mask = _mm256_movemask_epi8(continuation) as u32;
+
+        for offset in 0..32 {
+            let byte = *bytes.get_unchecked(i + offset);
+            let mapped = *BYTES_CHAR.get_unchecked(byte as usize);
+            let shift = ((continuation_mask >> offset) & 1) as isize;
+            transformations.push((mapped, shift));
+        }
+
+        i += 32;
+    }
+
+    if i < len {
+        extend_transformations_scalar(&bytes[i..], transformations);
+    }
+}
+
+#[inline]
+fn extend_transformations(bytes: &[u8], transformations: &mut Vec<(char, isize)>) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            // Safety: guarded by runtime AVX2 feature detection.
+            unsafe {
+                extend_transformations_avx2(bytes, transformations);
+            }
+            return;
+        }
+    }
+
+    extend_transformations_scalar(bytes, transformations);
+}
 
 // Thread-local timing statistics for ByteLevel pre-tokenization
 thread_local! {
@@ -94,23 +159,30 @@ pub fn print_byte_level_stats() {
             println!("No ByteLevel pre-tokenization calls recorded.");
             return;
         }
-        
-        let total = s.total_prefix_space_time + s.total_regex_split_time + s.total_byte_transform_time;
+
+        let total =
+            s.total_prefix_space_time + s.total_regex_split_time + s.total_byte_transform_time;
         let avg_per_call = total as f64 / s.call_count as f64;
-        
+
         println!("\n=== ByteLevel Pre-tokenization Statistics ===");
         println!("Total calls: {}", s.call_count);
         println!("Average per call: {:.2} ns", avg_per_call);
         println!("\nPhase breakdown (average per call):");
-        println!("  1. Prefix space handling:  {:>10.2} ns ({:>5.1}%)", 
-                 s.total_prefix_space_time as f64 / s.call_count as f64,
-                 (s.total_prefix_space_time as f64 / total as f64) * 100.0);
-        println!("  2. Regex splitting:        {:>10.2} ns ({:>5.1}%)", 
-                 s.total_regex_split_time as f64 / s.call_count as f64,
-                 (s.total_regex_split_time as f64 / total as f64) * 100.0);
-        println!("  3. Byte-level transform:   {:>10.2} ns ({:>5.1}%)", 
-                 s.total_byte_transform_time as f64 / s.call_count as f64,
-                 (s.total_byte_transform_time as f64 / total as f64) * 100.0);
+        println!(
+            "  1. Prefix space handling:  {:>10.2} ns ({:>5.1}%)",
+            s.total_prefix_space_time as f64 / s.call_count as f64,
+            (s.total_prefix_space_time as f64 / total as f64) * 100.0
+        );
+        println!(
+            "  2. Regex splitting:        {:>10.2} ns ({:>5.1}%)",
+            s.total_regex_split_time as f64 / s.call_count as f64,
+            (s.total_regex_split_time as f64 / total as f64) * 100.0
+        );
+        println!(
+            "  3. Byte-level transform:   {:>10.2} ns ({:>5.1}%)",
+            s.total_byte_transform_time as f64 / s.call_count as f64,
+            (s.total_byte_transform_time as f64 / total as f64) * 100.0
+        );
         println!("============================================\n");
     });
 }
@@ -186,11 +258,11 @@ impl ByteLevel {
 impl PreTokenizer for ByteLevel {
     fn pre_tokenize(&self, pretokenized: &mut PreTokenizedString) -> Result<()> {
         let re_ref: &SysRegex = &RE;
-        
+
         // Phase 1: Splitting (prefix space + regex)
         let mut prefix_time = 0u128;
         let mut regex_time = 0u128;
-        
+
         pretokenized.split(|_, mut normalized| {
             // Measure prefix space handling
             let prefix_start = Instant::now();
@@ -198,7 +270,7 @@ impl PreTokenizer for ByteLevel {
                 normalized.prepend(" ");
             }
             prefix_time += prefix_start.elapsed().as_nanos();
-            
+
             // Measure regex splitting
             let regex_start = Instant::now();
             let result = if self.use_regex {
@@ -209,26 +281,18 @@ impl PreTokenizer for ByteLevel {
             regex_time += regex_start.elapsed().as_nanos();
             result
         })?;
-        
+
         // Phase 2: Byte-level transformation
         let transform_start = Instant::now();
         pretokenized.normalize(|normalized| {
             let s = normalized.get();
             let mut transformations: Vec<(char, isize)> = Vec::with_capacity(s.len());
-            for (i, cur_char) in s.char_indices() {
-                let size = cur_char.len_utf8();
-                transformations.extend(
-                    s.as_bytes()[i..i + size]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, b)| (BYTES_CHAR[*b as usize], isize::from(i > 0))),
-                );
-            }
+            extend_transformations(s.as_bytes(), &mut transformations);
             normalized.transform(transformations, 0);
             Ok(())
         })?;
         let transform_time = transform_start.elapsed().as_nanos();
-        
+
         // Record statistics
         BYTE_LEVEL_STATS.with(|stats| {
             let mut s = stats.borrow_mut();
@@ -237,7 +301,7 @@ impl PreTokenizer for ByteLevel {
             s.total_byte_transform_time += transform_time;
             s.call_count += 1;
         });
-        
+
         Ok(())
     }
 }

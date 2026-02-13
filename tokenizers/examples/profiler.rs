@@ -1,8 +1,8 @@
-use std::time::Instant;
-use tokenizers::tokenizer::Tokenizer;
-use tokenizers::pre_tokenizers::byte_level::{reset_byte_level_stats, print_byte_level_stats};
 use std::env;
 use std::fs;
+use std::time::Instant;
+use tokenizers::pre_tokenizers::byte_level::{print_byte_level_stats, reset_byte_level_stats};
+use tokenizers::tokenizer::Tokenizer;
 // cargo run --example profiler -- <tokenizer_path> <text_path>
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<String> = env::args().collect();
@@ -59,10 +59,13 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // We need to call it for each part of pre_tokenized.
         // Replicating internal do_tokenize logic roughly.
         let mut encodings = vec![];
-        for (subseq, _offsets, _is_word) in pre_tokenized.get_splits(tokenizers::tokenizer::OffsetReferential::Normalized, tokenizers::tokenizer::OffsetType::Byte) {
-             let tokens = tokenizer.get_model().tokenize(subseq)?;
-             // We won't build full Encoding here to keep it simple and focus on model time
-             encodings.push(tokens);
+        for (subseq, _offsets, _is_word) in pre_tokenized.get_splits(
+            tokenizers::tokenizer::OffsetReferential::Normalized,
+            tokenizers::tokenizer::OffsetType::Byte,
+        ) {
+            let tokens = tokenizer.get_model().tokenize(subseq)?;
+            // We won't build full Encoding here to keep it simple and focus on model time
+            encodings.push(tokens);
         }
         total_model += start_model.elapsed().as_nanos();
 
@@ -72,21 +75,37 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let _time_no_post = start_full_no_post.elapsed().as_nanos();
 
         if let Some(post) = tokenizer.get_post_processor() {
-             let start_actual_post = Instant::now();
-             use tokenizers::tokenizer::PostProcessor;
-             let _ = post.process(encoding_no_post, None, true)?;
-             total_post_processing += start_actual_post.elapsed().as_nanos();
+            let start_actual_post = Instant::now();
+            use tokenizers::tokenizer::PostProcessor;
+            let _ = post.process(encoding_no_post, None, true)?;
+            total_post_processing += start_actual_post.elapsed().as_nanos();
         }
     }
 
     let n = lines.len() as f64;
     println!("--- Profiling Results (Average per line) ---");
-    println!("Normalization:      {:>10.2} ns", total_normalization as f64 / n);
-    println!("Pre-tokenization:   {:>10.2} ns", total_pre_tokenization as f64 / n);
+    println!(
+        "Normalization:      {:>10.2} ns",
+        total_normalization as f64 / n
+    );
+    println!(
+        "Pre-tokenization:   {:>10.2} ns",
+        total_pre_tokenization as f64 / n
+    );
     println!("Model Tokenization: {:>10.2} ns", total_model as f64 / n);
-    println!("Post-processing:    {:>10.2} ns", total_post_processing as f64 / n);
-    println!("Total (Pipeline):   {:>10.2} ns", (total_normalization + total_pre_tokenization + total_model + total_post_processing) as f64 / n);
-    println!("Total (End-to-End): {:>10.2} ns", total_end_to_end as f64 / n);
+    println!(
+        "Post-processing:    {:>10.2} ns",
+        total_post_processing as f64 / n
+    );
+    println!(
+        "Total (Pipeline):   {:>10.2} ns",
+        (total_normalization + total_pre_tokenization + total_model + total_post_processing) as f64
+            / n
+    );
+    println!(
+        "Total (End-to-End): {:>10.2} ns",
+        total_end_to_end as f64 / n
+    );
 
     // Print fine-grained ByteLevel statistics
     print_byte_level_stats();
@@ -96,7 +115,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let start_batch = Instant::now();
     let _ = tokenizer.encode_batch(lines.clone(), true)?;
     let duration_batch = start_batch.elapsed().as_nanos();
-    println!("Batch encode:       {:>10.2} ns (Total: {} ms)", duration_batch as f64 / n, duration_batch / 1_000_000);
+    println!(
+        "Batch encode:       {:>10.2} ns (Total: {} ms)",
+        duration_batch as f64 / n,
+        duration_batch / 1_000_000
+    );
 
     Ok(())
 }
