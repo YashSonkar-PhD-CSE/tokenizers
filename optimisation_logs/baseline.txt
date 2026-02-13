@@ -1,28 +1,23 @@
-Loading tokenizer from: data/tokenizer.json
-Reading text from: data/brown_corpus.txt
+Loading tokenizer from: ../data/tokenizer.json
+Reading text from: ../data/brown_corpus.txt
 Profiling 1000 lines...
 --- Profiling Results (Average per line) ---
-Normalization:         1558.57 ns
-Pre-tokenization:     15141.46 ns
-Model Tokenization:    3919.81 ns
-Post-processing:        694.31 ns
-Total (Pipeline):     21314.15 ns
-Total (End-to-End):   42732.18 ns
+Normalization:         1346.36 ns
+Pre-tokenization:     13911.10 ns
+Model Tokenization:    3581.16 ns
+Post-processing:        616.56 ns
+Total (Pipeline):     19455.19 ns
+Total (End-to-End):   38994.85 ns
 
 === ByteLevel Pre-tokenization Statistics ===
 Total calls: 3000
-Average per call: 15598.82 ns
+Average per call: 14533.73 ns
 
 Phase breakdown (average per call):
-  1. Prefix space handling:       23.07 ns (  0.1%)
-  2. Regex splitting:           8295.91 ns ( 53.2%)
-
-Total time breakdown:
-  Prefix space handling:          69222 ns
-  Regex splitting:             24887721 ns
-  Byte-level transform:        21839507 ns
-  Total:                       46796450 ns
+  1. Prefix space handling:       21.96 ns (  0.2%)
+  2. Regex splitting:           7819.65 ns ( 53.8%)
+  3. Byte-level transform:      6692.12 ns ( 46.0%)
 ============================================
 
 Profiling batch encode...
-Batch encode:          8742.06 ns (Total: 8 ms)
+Batch encode:          6328.66 ns (Total: 6 ms)
